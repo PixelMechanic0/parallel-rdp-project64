@@ -1,0 +1,6 @@
+build/
+build32/
+*.ini
+*.dll
+*.o
+*.d
