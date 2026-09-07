@@ -126,18 +126,22 @@ static void detect_rdram_size(void)
 {
     g_rdram_size = 0x400000;
     if (g_gfx.RDRAM) {
-        MEMORY_BASIC_INFORMATION mbi;
-        if (VirtualQuery(g_gfx.RDRAM, &mbi, sizeof(mbi)) != 0) {
-            char *base = (char *)mbi.BaseAddress;
-            size_t offset = (char *)g_gfx.RDRAM - base;
-            if (mbi.RegionSize > offset) {
-                size_t size = mbi.RegionSize - offset;
-                if (size >= 0x800000) {
-                    g_rdram_size = 0x800000;
-                } else if (size >= 0x400000) {
-                    g_rdram_size = 0x400000;
-                }
-            }
+        // Zilmar's API does not report the RDRAM size. Probe the end of the
+        // 8 MiB range instead of relying on the size of the first VM region;
+        // a valid allocation may be split into multiple adjacent regions.
+        const void *probe = g_gfx.RDRAM + 0x7f0000;
+        constexpr size_t probe_size = 16;
+        MEMORY_BASIC_INFORMATION mbi = {};
+        if (VirtualQuery(probe, &mbi, sizeof(mbi)) != 0 &&
+            mbi.State == MEM_COMMIT &&
+            (mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY |
+                            PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0 &&
+            mbi.RegionSize >= probe_size) {
+            const uintptr_t region_begin = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+            const uintptr_t region_end = region_begin + mbi.RegionSize;
+            const uintptr_t probe_begin = reinterpret_cast<uintptr_t>(probe);
+            if (probe_begin >= region_begin && probe_begin <= region_end - probe_size)
+                g_rdram_size = 0x800000;
         }
     }
     RDP_LOG_MSG("detect_rdram_size: rdram_size=0x%x (%u MB)", g_rdram_size, g_rdram_size / (1024 * 1024));
@@ -188,10 +192,8 @@ PJ64_EXPORT void PJ64_CALL RomClosed(void)
     RDP_LOG_MSG("RomClosed");
     g_rom_open = false;
 
-    if (g_fullscreen) {
-        toggle_fullscreen(g_gfx.hWnd, g_gfx.hStatusBar);
-    }
-
+    // PJ64 may close and reopen the graphics runtime while loading a state.
+    // Preserve the window mode across that lifecycle transition.
     if (g_renderer) {
         g_renderer->destroy();
         g_renderer.reset();

@@ -30,6 +30,7 @@ public:
 private:
     bool m_running = false;
     bool m_initialized = false;
+    bool m_frame_open = false;
     std::unique_ptr<WSIPlatformWin32> m_platform;
     Vulkan::WSI m_wsi;
     std::unique_ptr<RDP::CommandProcessor> m_frontend;

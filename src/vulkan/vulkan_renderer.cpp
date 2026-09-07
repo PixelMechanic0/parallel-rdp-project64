@@ -118,6 +118,18 @@ bool VulkanRenderer::init(const GFX_INFO &gfx, uint32_t rdram_size)
     quirks.set_native_resolution_tex_rect(g_config.native_tex_rect);
     m_frontend->set_quirks(quirks);
 
+    // Keep a WSI frame context active while the emulator submits RDP work.
+    // WSI owns this shared Device's frame-context lifetime.
+    if (!m_wsi.begin_frame()) {
+        RDP_LOG_MSG("VulkanRenderer::init: WSI::begin_frame failed!");
+        m_frontend.reset();
+        m_wsi.teardown();
+        m_wsi.set_platform(nullptr);
+        m_platform.reset();
+        return false;
+    }
+    m_frame_open = true;
+
     RDP_LOG_MSG("VulkanRenderer::init: success");
     m_running = true;
     m_initialized = true;
@@ -132,6 +144,11 @@ void VulkanRenderer::destroy()
     RDP_LOG_MSG("VulkanRenderer::destroy");
     m_initialized = false;
     m_running = false;
+
+    if (m_frame_open) {
+        m_wsi.end_frame();
+        m_frame_open = false;
+    }
 
     // 1. Drain pending RDP commands from frontend ring buffer
     if (m_frontend) {
@@ -180,6 +197,16 @@ void VulkanRenderer::render_frame(const GFX_INFO &gfx)
     if (!m_running || !m_frontend)
         return;
 
+    // A resize or transient surface loss can make acquisition fail. Retry
+    // before producing scanout work so it always belongs to an active frame.
+    if (!m_frame_open) {
+        if (!m_wsi.begin_frame()) {
+            RDP_LOG_MSG("render_frame: failed to acquire WSI frame");
+            return;
+        }
+        m_frame_open = true;
+    }
+
 #if PARALLEL_RDP_LOG
     static uint32_t frame_count = 0;
     frame_count++;
@@ -190,7 +217,7 @@ void VulkanRenderer::render_frame(const GFX_INFO &gfx)
     if (gfx.VI_WIDTH_REG) m_frontend->set_vi_register(RDP::VIRegister::Width, *gfx.VI_WIDTH_REG);
     if (gfx.VI_INTR_REG) m_frontend->set_vi_register(RDP::VIRegister::Intr, *gfx.VI_INTR_REG);
     if (gfx.VI_V_CURRENT_LINE_REG) m_frontend->set_vi_register(RDP::VIRegister::VCurrentLine, *gfx.VI_V_CURRENT_LINE_REG);
-    if (gfx.VI_V_BURST_REG) m_frontend->set_vi_register(RDP::VIRegister::Timing, *gfx.VI_V_BURST_REG);
+    if (gfx.VI_TIMING_REG) m_frontend->set_vi_register(RDP::VIRegister::Timing, *gfx.VI_TIMING_REG);
     if (gfx.VI_V_SYNC_REG) m_frontend->set_vi_register(RDP::VIRegister::VSync, *gfx.VI_V_SYNC_REG);
     if (gfx.VI_H_SYNC_REG) m_frontend->set_vi_register(RDP::VIRegister::HSync, *gfx.VI_H_SYNC_REG);
     if (gfx.VI_LEAP_REG) m_frontend->set_vi_register(RDP::VIRegister::Leap, *gfx.VI_LEAP_REG);
@@ -211,8 +238,6 @@ void VulkanRenderer::render_frame(const GFX_INFO &gfx)
     opts.upscale_deinterlacing = !g_config.interlacing;
     opts.crop_overscan_pixels = g_config.overscan_crop;
 
-    m_frontend->begin_frame_context();
-
     Vulkan::ImageHandle scanout = m_frontend->scanout(opts);
 
     RDP_LOG_MSG("render_frame (#%u): scanout=%s VI_STATUS=0x%08x ORIGIN=0x%08x WIDTH=%u",
@@ -221,11 +246,6 @@ void VulkanRenderer::render_frame(const GFX_INFO &gfx)
                 gfx.VI_STATUS_REG ? *gfx.VI_STATUS_REG : 0,
                 gfx.VI_ORIGIN_REG ? *gfx.VI_ORIGIN_REG : 0,
                 gfx.VI_WIDTH_REG ? *gfx.VI_WIDTH_REG : 0);
-
-    if (!m_wsi.begin_frame()) {
-        RDP_LOG_MSG("render_frame (#%u): WSI::begin_frame() returned false", frame_count);
-        return;
-    }
 
     auto &device = m_wsi.get_device();
     auto cmd = device.request_command_buffer();
@@ -253,6 +273,11 @@ void VulkanRenderer::render_frame(const GFX_INFO &gfx)
         cmd->swapchain_touch_in_stages(VK_PIPELINE_STAGE_2_CLEAR_BIT);
         device.submit(cmd);
         m_wsi.end_frame();
+        m_frame_open = false;
+        if (m_wsi.begin_frame())
+            m_frame_open = true;
+        else
+            RDP_LOG_MSG("render_frame (#%u): failed to acquire next WSI frame", frame_count);
         return;
     }
 
@@ -318,6 +343,11 @@ void VulkanRenderer::render_frame(const GFX_INFO &gfx)
 
     device.submit(cmd);
     m_wsi.end_frame();
+    m_frame_open = false;
+    if (m_wsi.begin_frame())
+        m_frame_open = true;
+    else
+        RDP_LOG_MSG("render_frame (#%u): failed to acquire next WSI frame", frame_count);
 
     RDP_LOG_MSG("render_frame (#%u): presented %ux%u -> %ux%u (dst=%d,%d swapchain=%ux%u)",
                 frame_count, src_w, src_h, target_w, target_h, dst_x, dst_y, fb_w, fb_h);
