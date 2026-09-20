@@ -65,7 +65,7 @@ COMMON_FLAGS := -O3 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initi
 CXXFLAGS := -std=c++17 $(COMMON_FLAGS)
 CFLAGS   := -std=c11 $(COMMON_FLAGS)
 
-LDFLAGS := -shared -static-libgcc -static-libstdc++ -luser32 -lgdi32 -lwinmm
+LDFLAGS := -shared -static -static-libgcc -static-libstdc++ -luser32 -lgdi32 -lwinmm
 
 BUILD_DIR   := build
 BUILD32_DIR := build32
