@@ -27,42 +27,68 @@ jobs:
       - name: Build 32-bit and 64-bit DLLs
         run: make -j"$(nproc)" all
 
-      - name: Package builds
+      - name: Determine version
+        shell: bash
         run: |
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            VERSION="${GITHUB_REF_NAME}"
+            VERSION="${GITHUB_REF_NAME#v}"
           else
-            VERSION="${GITHUB_REF_NAME//\//-}-${GITHUB_SHA::7}"
+            REF="${GITHUB_REF_NAME//\//-}"
+            VERSION="${REF}-${GITHUB_SHA::7}"
           fi
+
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "Building version: ${VERSION}"
 
-          mkdir -p dist/x86 dist/x64
+      - name: Package build
+        shell: bash
+        run: |
+          PACKAGE_NAME="parallel-rdp-project64-${VERSION}-windows"
 
-          cp build32/parallel-rdp-pj64.dll dist/x86/
-          cp build/parallel-rdp-pj64.dll   dist/x64/
-          for d in dist/x86 dist/x64; do
-            cp README.md LICENSE THIRD_PARTY_NOTICES.md "$d"/
-          done
+          rm -rf package dist
+          mkdir -p package/x86 package/x64 dist
 
-          ( cd dist/x86 && zip -r "../parallel-rdp-project64-${VERSION}-x86.zip" . )
-          ( cd dist/x64 && zip -r "../parallel-rdp-project64-${VERSION}-x64.zip" . )
-          rm -rf dist/x86 dist/x64
+          cp build32/parallel-rdp-pj64.dll package/x86/
+          cp build/parallel-rdp-pj64.dll   package/x64/
 
-          ( cd dist && sha256sum *.zip > SHA256SUMS.txt )
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md package/
+
+          (
+            cd package
+            zip -r "../dist/${PACKAGE_NAME}.zip" .
+          )
+
+          (
+            cd dist
+            sha256sum "${PACKAGE_NAME}.zip" > SHA256SUMS.txt
+          )
+
+          echo
+          echo "Release contents:"
+          unzip -l "dist/${PACKAGE_NAME}.zip"
+
+          echo
           cat dist/SHA256SUMS.txt
 
-      - name: Upload build artifacts
+      # CI/manual-run artifact:
+      # upload the unpacked files, NOT dist/*.zip, otherwise GitHub wraps
+      # your zip in another artifact zip.
+      - name: Upload build artifact
+        if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4
         with:
-          name: parallel-rdp-project64-${{ env.VERSION }}
-          path: dist/
+          name: parallel-rdp-project64-${{ env.VERSION }}-windows
+          path: package/
           retention-days: 14
 
       - name: Create GitHub Release
         if: github.ref_type == 'tag'
         run: |
           gh release create "${GITHUB_REF_NAME}" \
-            dist/*.zip dist/SHA256SUMS.txt \
-            --verify-tag --generate-notes --title "${GITHUB_REF_NAME}"
+            "dist/parallel-rdp-project64-${VERSION}-windows.zip" \
+            "dist/SHA256SUMS.txt" \
+            --verify-tag \
+            --generate-notes \
+            --title "${GITHUB_REF_NAME}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
