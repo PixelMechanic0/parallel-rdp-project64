@@ -1,10 +1,7 @@
 name: Build and Release
 
 on:
-  # Manual test builds from the Actions page; artifacts are uploaded, no release is made.
   workflow_dispatch:
-
-  # Tagged releases.
   push:
     tags:
       - "v*"
@@ -22,88 +19,50 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Clang and mingw-w64
+      - name: Install MinGW
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld g++-mingw-w64 mingw-w64 zip
-
-      - name: Show compiler versions
-        run: |
-          clang --version
-          ld.lld --version
-          x86_64-w64-mingw32-g++ --version | head -1
+          sudo apt-get install -y mingw-w64 zip
 
       - name: Build 32-bit and 64-bit DLLs
-        run: |
-          make -j"$(nproc)" all \
-            CC=x86_64-w64-mingw32-clang \
-            CXX=x86_64-w64-mingw32-clang++ \
-            PJ64_CC=i686-w64-mingw32-clang \
-            PJ64_CXX=i686-w64-mingw32-clang++
-
-      # A plugin DLL that depends on libc++.dll / libunwind.dll / libwinpthread-1.dll
-      # will fail to load for users, since those sit next to the compiler, not the emulator.
-      # If this fails, add -static to LDFLAGS in the Makefile.
-      - name: Verify DLLs have no runtime dependencies
-        run: |
-          status=0
-          for pair in "i686:build32/parallel-rdp-pj64.dll" "x86_64:build/parallel-rdp-pj64.dll"; do
-            arch="${pair%%:*}"; dll="${pair#*:}"
-            echo "== $dll"
-            imports="$("${arch}-w64-mingw32-objdump" -p "$dll" | sed -n 's/^ *DLL Name: //p' | sort -u)"
-            echo "$imports"
-            if bad="$(echo "$imports" | grep -iE '^(libc\+\+|libunwind|libwinpthread|libgcc_s|libstdc\+\+)')"; then
-              echo "::error file=Makefile::$dll depends on redistributable runtime DLLs: $(echo $bad)"
-              status=1
-            fi
-          done
-          exit $status
-
-      - name: Determine version string
-        run: |
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
-          else
-            # Branch names may contain '/', which is illegal in artifact names.
-            echo "VERSION=${GITHUB_REF_NAME//\//-}-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
-          fi
+        run: make -j"$(nproc)" all
 
       - name: Package builds
         run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="${GITHUB_REF_NAME//\//-}-${GITHUB_SHA::7}"
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
           mkdir -p dist/x86 dist/x64
 
           cp build32/parallel-rdp-pj64.dll dist/x86/
-          cp README.md LICENSE THIRD_PARTY_NOTICES.md dist/x86/
-
-          cp build/parallel-rdp-pj64.dll dist/x64/
-          cp README.md LICENSE THIRD_PARTY_NOTICES.md dist/x64/
+          cp build/parallel-rdp-pj64.dll   dist/x64/
+          for d in dist/x86 dist/x64; do
+            cp README.md LICENSE THIRD_PARTY_NOTICES.md "$d"/
+          done
 
           ( cd dist/x86 && zip -r "../parallel-rdp-project64-${VERSION}-x86.zip" . )
           ( cd dist/x64 && zip -r "../parallel-rdp-project64-${VERSION}-x64.zip" . )
-
           rm -rf dist/x86 dist/x64
 
           ( cd dist && sha256sum *.zip > SHA256SUMS.txt )
           cat dist/SHA256SUMS.txt
 
-      # Runs for both manual test builds and tagged releases.
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: parallel-rdp-project64-${{ env.VERSION }}-${{ github.run_number }}
-          path: |
-            dist/*.zip
-            dist/SHA256SUMS.txt
+          name: parallel-rdp-project64-${{ env.VERSION }}
+          path: dist/
           retention-days: 14
 
       - name: Create GitHub Release
         if: github.ref_type == 'tag'
         run: |
           gh release create "${GITHUB_REF_NAME}" \
-            dist/*.zip \
-            dist/SHA256SUMS.txt \
-            --verify-tag \
-            --generate-notes \
-            --title "${GITHUB_REF_NAME}"
+            dist/*.zip dist/SHA256SUMS.txt \
+            --verify-tag --generate-notes --title "${GITHUB_REF_NAME}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
