@@ -7,8 +7,12 @@ endif
 
 # Toolchains
 # 64-bit (x86_64)
-CC       ?= x86_64-w64-mingw32-gcc
-CXX      ?= x86_64-w64-mingw32-g++
+ifeq ($(origin CC),default)
+CC       := x86_64-w64-mingw32-gcc
+endif
+ifeq ($(origin CXX),default)
+CXX      := x86_64-w64-mingw32-g++
+endif
 # 32-bit (i686)
 PJ64_CC  ?= i686-w64-mingw32-gcc
 PJ64_CXX ?= i686-w64-mingw32-g++
